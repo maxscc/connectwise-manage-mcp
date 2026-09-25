@@ -104,6 +104,15 @@ async function startHttpTransport(): Promise<void> {
     }
   }
 
+  // Suffolk: when Entra OAuth is off, MCP_BEARER_TOKEN (if set) is required on
+  // every /mcp request. Upstream only checks it in OAuth mode.
+  const staticBearer = oauthEnabled ? "" : process.env.MCP_BEARER_TOKEN || "";
+  if (staticBearer) {
+    console.error("[auth] Static bearer token required on /mcp");
+  } else if (!oauthEnabled) {
+    console.error("[auth] WARNING: /mcp has no authentication (set MCP_BEARER_TOKEN)");
+  }
+
   httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(
       req.url || "/",
@@ -201,6 +210,23 @@ async function startHttpTransport(): Promise<void> {
       // Entra ID auth check
       // ------------------------------------------------------------------
       const handleMcp = async () => {
+        if (staticBearer) {
+          const authHeader = req.headers.authorization || "";
+          const supplied = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+          const ok = timingSafeEqual(
+            createHash("sha256").update(supplied).digest(),
+            createHash("sha256").update(staticBearer).digest(),
+          );
+          if (!ok) {
+            res.writeHead(401, {
+              "Content-Type": "application/json",
+              "WWW-Authenticate": "Bearer",
+            });
+            res.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+        }
+
         if (oauthEnabled && entraConfig) {
           const authHeader = req.headers.authorization;
 

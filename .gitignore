@@ -7,3 +7,9 @@ coverage/
 
 # Cloudflare Wrangler
 .wrangler/
+
+# Suffolk Windows service
+logs/
+SCC-*.exe
+SCC-*.xml
+WinSW-x64.exe

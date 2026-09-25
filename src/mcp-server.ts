@@ -157,5 +157,39 @@ export function createMcpServer(configOverride?: CwManageConfig): McpServer {
   registerAgreementTools(server, client);
   registerOpportunityTools(server, client);
 
+  applyWritePolicy(server);
+
   return server;
+}
+
+/**
+ * Suffolk: read-only by default. Write tools (create/update/delete/add note)
+ * are removed unless CW_ENABLE_WRITE_TOOLS=true; the rest get readOnlyHint.
+ * The API member's security role is still the real control.
+ */
+const WRITE_TOOL = /^cw_(create|update|delete|add)_/;
+
+function applyWritePolicy(server: McpServer): void {
+  const writesEnabled = process.env.CW_ENABLE_WRITE_TOOLS === "true";
+  const tools = (
+    server as unknown as {
+      _registeredTools: Record<
+        string,
+        { annotations?: Record<string, unknown>; remove(): void }
+      >;
+    }
+  )._registeredTools;
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!WRITE_TOOL.test(name)) {
+      tool.annotations = { ...tool.annotations, readOnlyHint: true };
+    } else if (!writesEnabled) {
+      tool.remove();
+    } else {
+      tool.annotations = {
+        ...tool.annotations,
+        readOnlyHint: false,
+        destructiveHint: name.startsWith("cw_delete_"),
+      };
+    }
+  }
 }
