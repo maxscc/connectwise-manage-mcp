@@ -18,7 +18,20 @@
  * affect every concurrent request in the process (including unrelated
  * tenants' cloud-hosted, fully-verified connections).
  */
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
+
+// Suffolk fix: the Agent above comes from the undici npm package (v8), which is
+// not compatible with the undici bundled inside Node's global fetch (v7 in
+// Node 22/24) -- passing it as `dispatcher` fails with "fetch failed"
+// (UND_ERR_INVALID_ARG: invalid onRequestStart method). Use undici's own fetch
+// so Agent and fetch always match. If a test has replaced globalThis.fetch
+// with a mock, honor the mock.
+const nativeFetch = globalThis.fetch;
+function resolveFetch(): typeof fetch {
+  return globalThis.fetch !== nativeFetch
+    ? globalThis.fetch
+    : (undiciFetch as unknown as typeof fetch);
+}
 
 export interface CwManageConfig {
   baseUrl: string;
@@ -125,7 +138,7 @@ export class CwManageClient {
       fetchOptions.body = JSON.stringify(options.body);
     }
 
-    const response = await fetch(url.toString(), fetchOptions);
+    const response = await resolveFetch()(url.toString(), fetchOptions);
 
     if (!response.ok) {
       const errorBody = await response.text();
