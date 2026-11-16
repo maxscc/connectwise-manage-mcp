@@ -48,10 +48,13 @@ async function fetchAuditTrail(
 // ConnectWise version, so the raw text is always returned alongside.
 const QUOTED_FROM_TO = /from\s+["'‘“](.*?)["'’”]\s+to\s+["'‘“](.*?)["'’”]/i;
 
+// A real status change reads "Status has been updated from "X" to "Y"." --
+// match on that sentence only, so workflow "Action ... performed" lines and
+// notification emails (whose bodies contain "Status:") are left out.
+const STATUS_CHANGE = /^\s*status\s+(has\s+been\s+)?(updated|changed)\b/i;
+
 function isStatusChange(e: AuditEntry): boolean {
-  const sub = (e.auditSubType ?? "").toLowerCase();
-  const text = (e.text ?? "").toLowerCase();
-  return sub.includes("status") || /\bstatus\b/.test(text);
+  return STATUS_CHANGE.test(e.text ?? "") && QUOTED_FROM_TO.test(e.text ?? "");
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -86,7 +89,7 @@ export function registerAuditTrailTools(server: McpServer, client: CwManageClien
 
   server.tool(
     "cw_get_ticket_status_history",
-    "Get the status-change history for up to 50 tickets in one call, from the ConnectWise audit trail. For each ticket returns every status change (oldest first) with date, who made it, and from/to status when the audit text includes them, plus the raw audit text. Use it for time-in-status and response metrics, e.g. how long tickets sat in 'Queued' before moving to 'In Progress'. Get the ticket IDs first with cw_search_tickets.",
+    "Get the status-change history for up to 50 tickets in one call, from the ConnectWise audit trail. For each ticket returns every status change (oldest first) with date, who made it, from/to status, and minutesInStatus (how long the ticket stayed in the 'to' status before the next change; null if it's still there). Workflow actions and notification emails are excluded. Use it for time-in-status and response metrics, e.g. how long tickets sat in 'Queued' before moving to 'In Progress'. Get the ticket IDs first with cw_search_tickets.",
     {
       ticketIds: z.array(z.number()).min(1).max(50).describe("Ticket IDs (max 50 per call)"),
     },
@@ -98,16 +101,20 @@ export function registerAuditTrailTools(server: McpServer, client: CwManageClien
             .filter(isStatusChange)
             .map((e) => {
               const m = QUOTED_FROM_TO.exec(e.text ?? "");
-              return {
-                date: e.enteredDate,
-                by: e.enteredBy,
-                from: m?.[1] ?? null,
-                to: m?.[2] ?? null,
-                text: e.text,
-              };
+              return { date: e.enteredDate, by: e.enteredBy, from: m?.[1] ?? null, to: m?.[2] ?? null };
             })
             .sort((a, b) => String(a.date ?? "").localeCompare(String(b.date ?? "")));
-          return { ticketId: id, statusChanges: changes };
+          // Minutes the ticket stayed in the status it moved TO, i.e. until the
+          // next change. null for the last change (still in that status).
+          const withDurations = changes.map((c, i) => {
+            const next = changes[i + 1];
+            const minutes =
+              next && c.date && next.date
+                ? Math.round((Date.parse(next.date) - Date.parse(c.date)) / 6000) / 10
+                : null;
+            return { ...c, minutesInStatus: minutes };
+          });
+          return { ticketId: id, statusChanges: withDurations };
         } catch (err) {
           return { ticketId: id, error: err instanceof Error ? err.message : String(err) };
         }
